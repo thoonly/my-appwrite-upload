@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
-import { client } from "./lib/appwrite";
-import { AppwriteException } from "appwrite";
+import { client, storage, account } from "./lib/appwrite";
+import { AppwriteException, ID, Permission, Role } from "appwrite";
 import AppwriteSvg from "../public/appwrite.svg";
 import ReactSvg from "../public/react.svg";
 
@@ -10,8 +10,21 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState("idle");
   const [showLogs, setShowLogs] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("idle");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [listFilesStatus, setListFilesStatus] = useState("idle");
+  const [user, setUser] = useState(null);
+  const [loginStatus, setLoginStatus] = useState("idle");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const detailsRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    account.get().then(setUser).catch(() => setUser(null));
+  }, []);
 
   const updateHeight = useCallback(() => {
     if (detailsRef.current) {
@@ -34,6 +47,127 @@ function App() {
       detailsRef.current.removeEventListener("toggle", updateHeight);
     };
   }, []);
+
+  async function login(e) {
+    e.preventDefault();
+    if (loginStatus === "loading") return;
+    setLoginStatus("loading");
+    try {
+      const result = await account.createEmailPasswordSession({ email, password });
+      const log = {
+        date: new Date(),
+        method: "POST",
+        path: "/v1/account/sessions/email",
+        status: 201,
+        response: JSON.stringify({ sessionId: result.$id, userId: result.userId }),
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setUser(await account.get());
+      setLoginStatus("success");
+      setEmail("");
+      setPassword("");
+    } catch (err) {
+      const log = {
+        date: new Date(),
+        method: "POST",
+        path: "/v1/account/sessions/email",
+        status: err instanceof AppwriteException ? err.code : 500,
+        response: err instanceof AppwriteException ? err.message : "Something went wrong",
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setLoginStatus("error");
+    }
+    setShowLogs(true);
+  }
+
+  async function logout() {
+    try {
+      await account.deleteSession({ sessionId: "current" });
+      const log = {
+        date: new Date(),
+        method: "DELETE",
+        path: "/v1/account/sessions/current",
+        status: 204,
+        response: "Session deleted",
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setUser(null);
+      setLoginStatus("idle");
+    } catch (err) {
+      const log = {
+        date: new Date(),
+        method: "DELETE",
+        path: "/v1/account/sessions/current",
+        status: err instanceof AppwriteException ? err.code : 500,
+        response: err instanceof AppwriteException ? err.message : "Something went wrong",
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+    }
+    setShowLogs(true);
+  }
+
+  async function listFiles() {
+    if (listFilesStatus === "loading") return;
+    setListFilesStatus("loading");
+    const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID;
+    try {
+      const result = await storage.listFiles({ bucketId });
+      const log = {
+        date: new Date(),
+        method: "GET",
+        path: `/v1/storage/buckets/${bucketId}/files`,
+        status: 200,
+        response: JSON.stringify({ total: result.total }),
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setFiles(result.files);
+      setListFilesStatus("success");
+    } catch (err) {
+      const log = {
+        date: new Date(),
+        method: "GET",
+        path: `/v1/storage/buckets/${bucketId}/files`,
+        status: err instanceof AppwriteException ? err.code : 500,
+        response: err instanceof AppwriteException ? err.message : "Something went wrong",
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setListFilesStatus("error");
+    }
+    setShowLogs(true);
+  }
+
+  async function uploadFile() {
+    if (!selectedFile || uploadStatus === "loading") return;
+    setUploadStatus("loading");
+    const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID;
+    try {
+      const result = await storage.createFile({ bucketId, fileId: ID.unique(), file: selectedFile, permissions: [Permission.read(Role.any())] });
+      const log = {
+        date: new Date(),
+        method: "POST",
+        path: `/v1/storage/buckets/${bucketId}/files`,
+        status: 201,
+        response: JSON.stringify({ fileId: result.$id, name: result.name }),
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setUploadStatus("success");
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await listFiles();
+    } catch (err) {
+      const log = {
+        date: new Date(),
+        method: "POST",
+        path: `/v1/storage/buckets/${bucketId}/files`,
+        status: err instanceof AppwriteException ? err.code : 500,
+        response:
+          err instanceof AppwriteException ? err.message : "Something went wrong",
+      };
+      setLogs((prevLogs) => [log, ...prevLogs]);
+      setUploadStatus("error");
+    }
+    setShowLogs(true);
+  }
 
   async function sendPing() {
     if (status === "loading") return;
@@ -151,55 +285,109 @@ function App() {
         >
           <span className="text-white">Send a ping</span>
         </button>
+
+        <div className="mt-6 flex flex-col items-center gap-3">
+          <h2 className="font-[Poppins] text-lg font-light text-[#2D2D31]">Account</h2>
+          {user ? (
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-sm text-[#2D2D31]">Logged in as <strong>{user.email}</strong></span>
+              <button
+                onClick={logout}
+                className="cursor-pointer rounded-md border border-[#FD366E] px-2.5 py-1.5 text-[#FD366E]"
+              >
+                Log out
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={login} className="flex flex-col gap-2 w-64">
+              <input
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="rounded-md border border-[#EDEDF0] px-3 py-1.5 text-sm outline-none focus:border-[#FD366E]"
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="rounded-md border border-[#EDEDF0] px-3 py-1.5 text-sm outline-none focus:border-[#FD366E]"
+              />
+              <button
+                type="submit"
+                disabled={loginStatus === "loading"}
+                className="cursor-pointer rounded-md bg-[#FD366E] px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span className="text-white">
+                  {loginStatus === "loading" ? "Logging in..." : "Log in"}
+                </span>
+              </button>
+              {loginStatus === "error" && (
+                <span className="text-sm text-[#B31212] text-center">Login failed. Check logs.</span>
+              )}
+            </form>
+          )}
+        </div>
+
+        <div className="mt-6 flex flex-col items-center gap-3">
+          <h2 className="font-[Poppins] text-lg font-light text-[#2D2D31]">Upload a file</h2>
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+            className="text-sm text-[#2D2D31] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-[#FD366E] file:px-2.5 file:py-1.5 file:text-white"
+          />
+          <button
+            onClick={uploadFile}
+            disabled={!selectedFile || uploadStatus === "loading"}
+            className="cursor-pointer rounded-md bg-[#FD366E] px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span className="text-white">
+              {uploadStatus === "loading" ? "Uploading..." : "Upload to Storage"}
+            </span>
+          </button>
+          {uploadStatus === "success" && (
+            <span className="text-sm text-[#0A714F]">File uploaded successfully!</span>
+          )}
+          {uploadStatus === "error" && (
+            <span className="text-sm text-[#B31212]">Upload failed. Check logs.</span>
+          )}
+        </div>
+
+        <div className="mt-6 flex w-full max-w-[40em] flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-[Poppins] text-lg font-light text-[#2D2D31]">Storage files</h2>
+            <button
+              onClick={listFiles}
+              disabled={listFilesStatus === "loading"}
+              className="cursor-pointer rounded-md bg-[#FD366E] px-2.5 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="text-white">{listFilesStatus === "loading" ? "Loading..." : "Refresh"}</span>
+            </button>
+          </div>
+          {files.length === 0 ? (
+            <p className="text-sm text-[#97979B]">
+              {listFilesStatus === "idle" ? "Click Refresh to load files." : "No files found."}
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {files.map((file) => (
+                <li
+                  key={file.$id}
+                  className="flex items-center justify-between rounded-md border border-[#EDEDF0] bg-white px-4 py-2 text-sm"
+                >
+                  <span className="truncate text-[#2D2D31]">{file.name}</span>
+                  <span className="ml-4 shrink-0 text-[#97979B]">{(file.sizeOriginal / 1024).toFixed(1)} KB</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
-      <div className="grid grid-rows-3 gap-7 lg:grid-cols-3 lg:grid-rows-none">
-        <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-          <h2 className="text-xl font-light text-[#2D2D31]">Edit your app</h2>
-          <p>
-            Edit{" "}
-            <code className="rounded-sm bg-[#EDEDF0] p-1">app/page.js</code> to
-            get started with building your app.
-          </p>
-        </div>
-        <a
-          href="https://cloud.appwrite.io"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-            <div className="flex flex-row items-center justify-between">
-              <h2 className="text-xl font-light text-[#2D2D31]">
-                Go to console
-              </h2>
-              <span className="icon-arrow-right text-[#D8D8DB]"></span>
-            </div>
-            <p>
-              Navigate to the console to control and oversee the Appwrite
-              services.
-            </p>
-          </div>
-        </a>
-
-        <a
-          href="https://appwrite.io/docs"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-            <div className="flex flex-row items-center justify-between">
-              <h2 className="text-xl font-light text-[#2D2D31]">
-                Explore docs
-              </h2>
-              <span className="icon-arrow-right text-[#D8D8DB]"></span>
-            </div>
-            <p>
-              Discover the full power of Appwrite by diving into our
-              documentation.
-            </p>
-          </div>
-        </a>
-      </div>
 
       <aside className="fixed bottom-0 flex w-full cursor-pointer border-t border-[#EDEDF0] bg-white">
         <details open={showLogs} ref={detailsRef} className={"w-full"}>
